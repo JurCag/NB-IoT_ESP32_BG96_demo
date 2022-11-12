@@ -1,0 +1,66 @@
+{
+	"folders": [
+		{
+			"name": "ESP_ThingSpeak_demo",
+			"path": "ESP_Projects/ESP_ThingSpeak_demo"
+		},
+		{
+			"path": "ESP_Projects/ESP_AT_cmds_demo"
+		},
+		{
+			"path": "ESP_Projects/ESP_BlinkLED"
+		},
+		{
+			"path": "ESP_Projects/ESP_UART_intrpts_demo"
+		},
+		{
+			"name": "ARD_HiveMQ_MQTT_demo",
+			"path": "ARD_Projects/ARD_HiveMQ_MQTT_demo"
+		},
+		{
+			"path": "ARD_Projects/AT_cmds_demo"
+		},
+		{
+			"name": "ARD_CayenneMQTT_demo",
+			"path": "ARD_Projects/ARD_CayenneMQTT_demo"
+		},
+		{
+			"name": "ESP_UART_iomux_demo",
+			"path": "ESP_Projects/ESP_UART_iomux_demo"
+		},
+		{
+			"name": "ESP_AWS_BG96_demo",
+			"path": "ESP_Projects/ESP_AWS_BG96_demo"
+		},
+		{
+			"name": "ESP_logging_demo",
+			"path": "ESP_Projects/ESP_logging_demo"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"uart.h": "c",
+			"*.tcc": "c",
+			"istream": "c",
+			"ostream": "c",
+			"sstream": "c",
+			"*.tpp": "cpp",
+			"bg96.h": "c",
+			"freertos.h": "c",
+			"string.h": "c",
+			"uart_struct.h": "c",
+			"tx_queue.h": "c",
+			"fifo.h": "c",
+			"esp_log.h": "c",
+			"freertosconfig.h": "c",
+			"sdkconfig.h": "c",
+			"task.h": "c",
+			"gpio_types.h": "c",
+			"*.ipp": "c",
+			"stdio.h": "c",
+			"main.h": "c",
+			"typeinfo": "c",
+			"ratio": "c"
+		}
+	}
+}
