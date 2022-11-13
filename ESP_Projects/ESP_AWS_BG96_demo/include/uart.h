@@ -15,6 +15,11 @@
 
 #define BUFFER_SIZE     (256)
 
+typedef struct
+{
+    char b[BUFFER_SIZE];
+} RxData_t;
+
 // UART 0
 void UART0_initConfig(void);
 void UART0_initIO(void);

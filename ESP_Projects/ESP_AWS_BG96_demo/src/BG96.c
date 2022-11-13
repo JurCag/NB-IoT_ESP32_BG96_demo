@@ -1,13 +1,23 @@
 #include "BG96.h"
 
+QueueHandle_t rxDataQueue = NULL;
+
+
 /* Local variables */
 static BG96_AtPacket_t deqdAtPacket;
-static QueueHandle_t rxDataQueue = NULL;
 static QueueHandle_t atPacketsTxQueue = NULL;
 static TaskHandle_t taskRxHandle = NULL;
 static TaskHandle_t taskTxHandle = NULL;
 static TaskHandle_t taskPowerUpModemHandle = NULL;
 static TaskHandle_t taskFeedTxQueueHandle = NULL;
+
+// Common indexes for this connection/application (BG96 can open more connection to the GSM network)
+ContextID_t contextID = CONTEXT_ID_1;
+char contextIdStr[8];
+SslContextID_t SSL_ctxID = SSL_CTX_ID_0;
+char sslCtxIdStr[8];
+MqttSocketIdentifier_t client_idx = CLIENT_IDX_0;
+char clientIdxStr[8];
 
 
 /* Local FreeRTOS tasks */
@@ -18,29 +28,32 @@ static void taskPowerUpModem(void *pvParameters);
 // static void taskTest(void *pvParameters);
 
 /* Local functions */
-static void powerUpModem(gpio_num_t pwrKeypin) ;
+static void powerUpModem(gpio_num_t pwrKeypin);
+static void swPowerDownModem(void);
 static void queueRxData(RxData_t rxData);
-static void queueAtPacket(AtCmd_t* cmd, AtCmdType_t type);
-static void configureSslParams(void);
-static void prepareArg(const char* paramsArr[MAX_PARAMS], char* arg);
+static void initCommonConnParams(void);
 
+static uint8_t responseParser(void);
+static void BG96_atCmdFamilyParser(BG96_AtPacket_t* atPacket, RxData_t* data);
 
-void BG96_txPacket(char* packet)
+void BG96_txAtCmd(char* packet)
 {
-    UART0_writeBytes(packet);
     UART2_writeBytes(packet);
+
+    dumpInterComm("[BG96 <-] ");
+    dumpInterComm(packet);
 }
 
 /* Execution Command AT+<cmd> */
-void BG96_sendCommand(AtCmd_t* atCmd, AtCmdType_t cmdType)
+void BG96_sendAtPacket(BG96_AtPacket_t* atPacket) // TODO: change to sendPacket(BG96_AtPacket_t* packet)
 {
     static char atCmdBody[BUFFER_SIZE];
     memset(atCmdBody, '\0', sizeof(atCmdBody));
 
     strcpy(atCmdBody, "AT");
-    strcat(atCmdBody, atCmd->cmd);
+    strcat(atCmdBody, atPacket->atCmd->cmd);
     
-    switch(cmdType)
+    switch(atPacket->atCmdType)
     {
         case TEST_COMMAND:
             // TODO: TEST_COMMAND
@@ -50,7 +63,7 @@ void BG96_sendCommand(AtCmd_t* atCmd, AtCmdType_t cmdType)
             break;
         case WRITE_COMMAND:
             strcat(atCmdBody, "=");
-            strcat(atCmdBody, atCmd->arg);
+            strcat(atCmdBody, atPacket->atCmd->arg);
             strcat(atCmdBody, "\r\n");
             break;
         case EXECUTION_COMMAND:
@@ -60,11 +73,10 @@ void BG96_sendCommand(AtCmd_t* atCmd, AtCmdType_t cmdType)
             break;
     }
 
-    BG96_txPacket(atCmdBody);
-
+    BG96_txAtCmd(atCmdBody);
 }
 
-/* Create FreeRTOS tasks */
+/* Create FreeRTOS tasks */ // TODO: control task sizes uxTaskGetStackHighWaterMark()
 void createTaskRx(void)
 {
     xTaskCreate(
@@ -106,7 +118,7 @@ void createTaskFeedTxQueue(void)
     xTaskCreate(
                 taskFeedTxQueue,        /* Task function */
                 "taskFeedTxQueue",      /* Name of task */
-                1024,                   /* Stack size of task */
+                2048,                   /* Stack size of task */
                 NULL,                   /* Parameter of the task */
                 tskIDLE_PRIORITY+1,     /* Priority of the task */
                 &taskFeedTxQueueHandle  /* Handle of created task */
@@ -116,7 +128,7 @@ void createTaskFeedTxQueue(void)
 /* Create FreeRTOS queues */
 void createRxQueue(void)
 {
-    rxDataQueue = xQueueCreate(4, sizeof(RxData_t));
+    rxDataQueue = xQueueCreate(1, sizeof(RxData_t));
 }
 
 void createAtPacketsTxQueue(void)
@@ -136,23 +148,22 @@ static void taskPowerUpModem(void *pvParameters)
     pwrKeypin = (gpio_num_t)pvParameters;
     powerUpModem(pwrKeypin);
 
-    UART0_writeBytes("\r\nModem power-up: [ STARTED ]\r\n");
+    printInfo("\r\nModem power-up: [ STARTED ]\r\n");
     while(1)
     {
         if (xQueueReceive(rxDataQueue, &rxData, MS_TO_TICKS(250)) == pdTRUE)
         {
             if (strstr(rxData.b, "APP RDY") != NULL)
             {
-                UART0_writeBytes("Modem power-up: [ SUCCESS ]\r\n");
+                printInfo("Modem power-up: [ SUCCESS ]\r\n");
                 createTaskFeedTxQueue();
                 break;
             }
-            xTaskNotifyGive(taskRxHandle);
         }
 
         if (i++ > (timeToWaitForPowerUp/250))
         {
-            UART0_writeBytes("Modem power-up: [ FAIL ]\r\n");
+            printInfo("Modem power-up: [ FAIL ]\r\n");
             break;
         }
     }
@@ -176,7 +187,14 @@ static void taskFeedTxQueue(void* pvParameters)
                 queueAtPacket(&AT_signalQualityReport, EXECUTION_COMMAND);
                 queueAtPacket(&AT_networkRegistrationStatus, READ_COMMAND);
                 queueAtPacket(&AT_attachmentOrDetachmentOfPS, READ_COMMAND);
-                configureSslParams();
+                
+                initCommonConnParams();
+                BG96_configureSslParams();
+                BG96_configureMqttParams();
+                BG96_configureTcpIpParams();
+                BG96_connectToMqttServer();
+                
+                // swPowerDownModem();
                 taskState = TASK_IDLE;
                 break;
             case TASK_IDLE:
@@ -191,46 +209,82 @@ static void taskFeedTxQueue(void* pvParameters)
 
 static void taskTx(void *pvParameters)
 {
-    static char expectedResponse[32];
-    static char* response;
-    static RxData_t rxData;
-
     while(1)
     {
         if (xQueueReceive(atPacketsTxQueue, &deqdAtPacket, MS_TO_TICKS(20)) == pdTRUE)
-        {                        
-            BG96_sendCommand(deqdAtPacket.atCmd, deqdAtPacket.atCmdType);
-            
-            memcpy(expectedResponse, deqdAtPacket.atCmd->cmd, strlen(deqdAtPacket.atCmd->cmd));
-
-            if (xQueueReceive(rxDataQueue, &rxData, MS_TO_TICKS(deqdAtPacket.atCmd->maxRespTime_ms)) == pdTRUE)
+        {
+            for(uint8_t i = 0; i < RESEND_ATTEMPTS; i++)
             {
-                if (deqdAtPacket.atCmdType == WRITE_COMMAND)
+                BG96_sendAtPacket(&deqdAtPacket);
+            
+                if (responseParser() == EXIT_SUCCESS)
                 {
-                    if (strstr(rxData.b, expectedResponse) != NULL)
-                    {
-                        xTaskNotifyGive(taskFeedTxQueueHandle);
-                    }
-                }
-
-                
-                response = strstr(rxData.b, deqdAtPacket.atCmd->confirmation);
-                if (response != NULL)
-                {
-                    UART0_writeBytes(rxData.b);
-                    UART0_writeBytes(response);
-                    // TODO: responseParser()
-                    // break;
-                }
-                else
-                {
-                    // Search for error response "ERROR"
-                    response = strstr(rxData.b, deqdAtPacket.atCmd->error);
-                    // break;
+                    xTaskNotifyGive(taskFeedTxQueueHandle);
+                    break;
                 }
             }
-            // TODO: else odoslat znovu 3x?, ak stale nedojde odpoved tak nejaky error stav
         }
+    }
+}
+
+static uint8_t responseParser(void)
+{
+    static RxData_t rxData;
+
+    if (xQueueReceive(rxDataQueue, &rxData, MS_TO_TICKS(deqdAtPacket.atCmd->maxRespTime_ms)) == pdTRUE)
+    {
+        if (strstr(rxData.b, deqdAtPacket.atCmd->cmd) != NULL) // make sure the response belongs to the cmd that was sent
+        {
+            if (strstr(rxData.b, deqdAtPacket.atCmd->confirmation) != NULL)
+            {
+                dumpInterComm("[BG96 ->] ");
+                dumpInterComm(rxData.b);
+                // printInfo("Response: [ OK ]\r\n");
+                BG96_atCmdFamilyParser(&deqdAtPacket, &rxData);
+                return EXIT_SUCCESS;
+            }
+            else if(strstr(rxData.b, deqdAtPacket.atCmd->error) != NULL)
+            {
+                printInfo("Response: [ ERROR ]\r\n");
+                return EXIT_FAILURE;
+            }
+            else if (xQueueReceive(rxDataQueue, &rxData, MS_TO_TICKS(deqdAtPacket.atCmd->maxRespTime_ms)) == pdTRUE)
+            {
+                if (strstr(rxData.b, deqdAtPacket.atCmd->confirmation) != NULL)
+                {
+                    printInfo("Response: [ LATE OK ]\r\n");
+                    BG96_atCmdFamilyParser(&deqdAtPacket, &rxData);
+                    return EXIT_SUCCESS;
+                }
+                else if(strstr(rxData.b, deqdAtPacket.atCmd->error) != NULL)
+                {
+                    printInfo("Response: [ LATE ERROR ]\r\n");
+                    return EXIT_FAILURE;
+                }
+            }
+        }
+    }
+    else
+    {
+        printInfo("Response: [ MISSING ]\r\n");
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_FAILURE;
+}
+
+static void BG96_atCmdFamilyParser(BG96_AtPacket_t* atPacket, RxData_t* data)
+{
+    switch(atPacket->atCmd->family)
+    {
+        case TCPIP_RELATED_AT_COMMANDS:
+            BG96_tcpipOkResponseParser(atPacket, data->b);
+            break;
+        case MQTT_RELATED_AT_COMMANDS:
+            BG96_mqttOkResponseParser(atPacket, data->b);
+            break;
+        default:
+            break;
     }
 }
 
@@ -245,6 +299,7 @@ static void taskRx(void* pvParameters)
         if (readLen > 0)
         {
             queueRxData(rxData);
+            memset(rxData.b, '\0', sizeof(rxData.b));
         }
     }
 }
@@ -256,112 +311,45 @@ static void powerUpModem(gpio_num_t pwrKeypin)
     gpio_set_level(pwrKeypin, 0);
 }
 
+static void swPowerDownModem(void) 
+{
+    queueAtPacket(&AT_powerDown, EXECUTION_COMMAND);
+}
+
 static void queueRxData(RxData_t rxData)
 {
     xQueueSend(rxDataQueue, rxData.b, 10);
 }
 
-static void queueAtPacket(AtCmd_t* cmd, AtCmdType_t cmdType)
+void queueAtPacket(AtCmd_t* cmd, AtCmdType_t cmdType)
 {
-    static uint8_t firstWriteCmd = 1;
     BG96_AtPacket_t xAtPacket;
-    uint32_t notifValue;
+    static uint32_t notifValue;
+    static uint8_t firstAtPacket = 1;
 
     xAtPacket.atCmd = cmd;
     xAtPacket.atCmdType = cmdType;
-    
-    if (cmdType != WRITE_COMMAND)
+
+    notifValue = ulTaskNotifyTake(pdFALSE, MS_TO_TICKS(2*(cmd->maxRespTime_ms)));
+    if (notifValue > 0)
     {
-        xQueueSend(atPacketsTxQueue, &xAtPacket, MS_TO_TICKS(400));
+        xQueueSend(atPacketsTxQueue, &xAtPacket, 0);
+    }
+    else if (firstAtPacket == 1)
+    {
+        firstAtPacket = 0;
+        xQueueSend(atPacketsTxQueue, &xAtPacket, 0);
     }
     else
     {
-        notifValue = ulTaskNotifyTake(pdFALSE, MS_TO_TICKS(2*(cmd->maxRespTime_ms)));
-        if (notifValue > 0)
-        {
-            xQueueSend(atPacketsTxQueue, &xAtPacket, MS_TO_TICKS(400));
-        }
-        else if (firstWriteCmd == 1)
-        {
-            firstWriteCmd = 0;
-            xQueueSend(atPacketsTxQueue, &xAtPacket, MS_TO_TICKS(400));
-        }
-        else
-        {
-            UART0_writeBytes("ulTaskNotifyTake expired");
-        }
+        printInfo("ulTaskNotifyTake: [ EXPIRED ]");
     }
 }
 
-
-static void configureSslParams(void)
-{
-    char ctxIdStr[16];
-    char tempStr[16];
-    static char* paramsArr[MAX_PARAMS];
-
-    static SslContextID_t SSL_ctxID = SSL_CTX_ID_0; 
-    static SslVersion_t SSL_version = ALL;
-    static SslSecLevel_t seclevel = MANAGE_SERVER_AND_CLIENT_AUTHENTICATION;
-    static SslIgnoreLocalTime_t ignore_ltime = IGNORE_VALIDITY_CHECK;
-    static char cacertpath[] = "\"cacert.pem\"";
-    static char client_cert_path[] = "\"client.pem\"";
-    static char client_key_path[] = "\"user_key.pem\"";
-    static char supportAllCiphersuites[] = "0xFFFF";
-    
-    memset(ctxIdStr, '\0', sizeof(ctxIdStr));
-    sprintf(ctxIdStr, "%d", SSL_ctxID);
-
-    paramsArr[0] = "\"cacert\"";
-    paramsArr[1] = ctxIdStr;
-    paramsArr[2] = cacertpath;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND); 
-
-    paramsArr[0] = "\"clientcert\"";
-    paramsArr[1] = ctxIdStr;
-    paramsArr[2] = client_cert_path;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND); 
-
-    paramsArr[0] = "\"clientkey\"";
-    paramsArr[1] = ctxIdStr;
-    paramsArr[2] = client_key_path;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND); 
-
-    paramsArr[0] = "\"ciphersuite\"";
-    paramsArr[1] = ctxIdStr;
-    paramsArr[2] = supportAllCiphersuites;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND); 
-
-    paramsArr[0] = "\"sslversion\"";
-    paramsArr[1] = ctxIdStr;
-    sprintf(tempStr, "%d", SSL_version);
-    paramsArr[2] = tempStr;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND);
-
-    paramsArr[0] = "\"seclevel\"";
-    paramsArr[1] = ctxIdStr;
-    sprintf(tempStr, "%d", seclevel);
-    paramsArr[2] = tempStr;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND);
-
-    paramsArr[0] = "\"ignorelocaltime\"";
-    paramsArr[1] = ctxIdStr;
-    sprintf(tempStr, "%d", ignore_ltime);
-    paramsArr[2] = tempStr;
-    prepareArg(paramsArr, AT_configureParametersOfAnSSLContext.arg);
-    queueAtPacket(&AT_configureParametersOfAnSSLContext, WRITE_COMMAND);
-}
-
-static void prepareArg(const char* paramsArr[MAX_PARAMS], char* arg)
+void prepareArg(char** paramsArr, uint8_t numOfParams, char* arg)
 {
     memset(arg, '\0', ARG_LEN);
-    for (uint8_t i = 0; i < MAX_PARAMS; i++)
+    for (uint8_t i = 0; i < numOfParams; i++)
     {
         if (paramsArr[i] != NULL)
         {
@@ -372,9 +360,32 @@ static void prepareArg(const char* paramsArr[MAX_PARAMS], char* arg)
     arg[strlen(arg)-1] = '\0';
 }
 
+static void initCommonConnParams(void)
+{
+    memset(contextIdStr, '\0', sizeof(contextIdStr));
+    sprintf(contextIdStr, "%d", contextID);
+    
+    memset(sslCtxIdStr, '\0', sizeof(sslCtxIdStr));
+    sprintf(sslCtxIdStr, "%d", SSL_ctxID);
+
+    memset(clientIdxStr, '\0', sizeof(clientIdxStr));
+    sprintf(clientIdxStr, "%d", client_idx);
+}
 
 
+void dumpInterComm(char* msg)
+{
+#ifdef DUMP_INTER_COMM
+    UART0_writeBytes(msg);
+#endif
+}
 
+void printInfo(char* msg)
+{
+#ifdef PRINT_INFO
+    UART0_writeBytes(msg);
+#endif
+}
 
 
 // void createTaskTest(void)

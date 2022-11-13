@@ -60,7 +60,13 @@
 			"stdio.h": "c",
 			"main.h": "c",
 			"typeinfo": "c",
-			"ratio": "c"
+			"ratio": "c",
+			"bg96_aws_mqtt_conn.h": "c",
+			"bg96_tcpip.h": "c",
+			"random": "c",
+			"bg96_at_cmds_core.h": "c",
+			"bg96_ssl.h": "c",
+			"secrets.h": "c"
 		}
 	}
 }
