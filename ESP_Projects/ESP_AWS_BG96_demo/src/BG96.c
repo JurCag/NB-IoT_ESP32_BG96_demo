@@ -45,7 +45,7 @@ void BG96_txAtCmd(char* packet)
 }
 
 /* Execution Command AT+<cmd> */
-void BG96_sendAtPacket(BG96_AtPacket_t* atPacket) // TODO: change to sendPacket(BG96_AtPacket_t* packet)
+void BG96_sendAtPacket(BG96_AtPacket_t* atPacket)
 {
     static char atCmdBody[BUFFER_SIZE];
     memset(atCmdBody, '\0', sizeof(atCmdBody));
@@ -76,7 +76,7 @@ void BG96_sendAtPacket(BG96_AtPacket_t* atPacket) // TODO: change to sendPacket(
     BG96_txAtCmd(atCmdBody);
 }
 
-/* Create FreeRTOS tasks */ // TODO: control task sizes uxTaskGetStackHighWaterMark()
+/* Create FreeRTOS tasks */ // TODO: should control task sizes uxTaskGetStackHighWaterMark()
 void createTaskRx(void)
 {
     xTaskCreate(
@@ -198,7 +198,7 @@ static void taskFeedTxQueue(void* pvParameters)
                 taskState = TASK_IDLE;
                 break;
             case TASK_IDLE:
-                // TODO: nejakou direct message ho znova dat do TASK_RUN? alebo proste suspend/delete ak uz nic nebude robit
+                // TODO: problably not necessary, deleteTask?
                 break;
             default:
                 break;
@@ -261,6 +261,11 @@ static uint8_t responseParser(void)
                     printInfo("Response: [ LATE ERROR ]\r\n");
                     return EXIT_FAILURE;
                 }
+            }
+            else if (strstr(rxData.b, ">") != NULL)
+            {
+                BG96_atCmdFamilyParser(&deqdAtPacket, &rxData);
+                return EXIT_SUCCESS;
             }
         }
     }

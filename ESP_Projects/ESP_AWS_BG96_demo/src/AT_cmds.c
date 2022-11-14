@@ -152,3 +152,14 @@ AtCmd_t AT_connectClientToMQTTServer =
     .error = "ERROR",
     .maxRespTime_ms = 5000
 };
+
+AtCmd_t AT_publishMessages = 
+{
+    .family = MQTT_RELATED_AT_COMMANDS,
+    .id = PUBLISH_MESSAGES,
+    .cmd = "+QMTPUB",
+    .arg = "",
+    .confirmation = "OK",
+    .error = "ERROR",
+    .maxRespTime_ms = 15000
+};

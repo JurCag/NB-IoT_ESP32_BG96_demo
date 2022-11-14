@@ -1,6 +1,7 @@
 #include "BG96_mqtt.h"
 
 static uint8_t mqttConnOpened = 0;
+static uint8_t mqttConnConnected = 0;
 
 void BG96_configureMqttParams(void)
 {
@@ -36,6 +37,12 @@ void BG96_connectToMqttServer(void)
     static uint8_t idx = 0;
     static uint16_t port = 8883;
     char tempStr[8];
+    char tempStr2[8];
+    char tempStr3[8];
+    static uint8_t msgID = 1; // TODO: add enums
+    static uint8_t qos = 1;
+    static uint8_t retain = 0;
+    static char* mqttTopic = "\"BG96_demoThing/sensors\"";
 
     idx = 0;
     paramsArr[idx++] = clientIdxStr;
@@ -56,6 +63,32 @@ void BG96_connectToMqttServer(void)
             paramsArr[idx++] = MQTT_BG96DEMO_CLIENT_ID_STR;
             prepareArg(paramsArr, idx, AT_connectClientToMQTTServer.arg);
             queueAtPacket(&AT_connectClientToMQTTServer, WRITE_COMMAND);
+            break;
+        }
+
+        if (i++ > 30)
+        {
+            break;
+        }
+    }
+
+    while(1) // TODO: replace by timer
+    {
+        static uint8_t i = 0;
+        TASK_DELAY_MS(20);
+        if (mqttConnConnected == 1) // takes approx 200ms
+        {
+            idx = 0;
+            paramsArr[idx++] = clientIdxStr;
+            sprintf(tempStr, "%d", msgID);
+            paramsArr[idx++] = tempStr;
+            sprintf(tempStr2, "%d", qos);
+            paramsArr[idx++] = tempStr2;
+            sprintf(tempStr3, "%d", retain);
+            paramsArr[idx++] = tempStr3;
+            paramsArr[idx++] = mqttTopic;
+            prepareArg(paramsArr, idx, AT_publishMessages.arg);
+            queueAtPacket(&AT_publishMessages, WRITE_COMMAND);
             break;
         }
 
@@ -85,7 +118,7 @@ void BG96_mqttOkResponseParser(BG96_AtPacket_t* packet, char* data)
             {
                 if (xQueueReceive(rxDataQueue, &rxData, MS_TO_TICKS(tempPacket.atCmd->maxRespTime_ms)) == pdTRUE)
                 {
-                    if(strstr(rxData.b, "+QMTOPEN: 0,0") != NULL) // TODO: parse "+QMTOPEN: 0,0"
+                    if(strstr(rxData.b, "+QMTOPEN: 0,0") != NULL) // TODO: implement parser!
                     {
                         printInfo("MQTT connection: [ OPENED ]\r\n");
                         mqttConnOpened = 1;
@@ -105,13 +138,14 @@ void BG96_mqttOkResponseParser(BG96_AtPacket_t* packet, char* data)
             {
                 if (xQueueReceive(rxDataQueue, &rxData, MS_TO_TICKS(tempPacket.atCmd->maxRespTime_ms)) == pdTRUE)
                 {
-                    if(strstr(rxData.b, "+QMTCONN: 0,0,0") != NULL) // TODO: parse "+QMTCONN: 0,0,0"
+                    if(strstr(rxData.b, "+QMTCONN: 0,0,0") != NULL) // TODO: implement parser!
                     {
-                        printInfo("MQTT connection: [ SUCCESS ]");
+                        printInfo("MQTT connection: [ SUCCESS ]\r\n");
+                        mqttConnConnected = 1;
                     }
                     else
                     {
-                        printInfo("MQTT connection: [ FAILED ]");
+                        printInfo("MQTT connection: [ FAILED ]\r\n");
                     }
                 }
             }
@@ -121,6 +155,21 @@ void BG96_mqttOkResponseParser(BG96_AtPacket_t* packet, char* data)
             break;
         case SUBSCRIBE_TO_TOPICS:
 
+            break;
+        case PUBLISH_MESSAGES:
+            if (tempPacket.atCmdType == WRITE_COMMAND)
+            {
+                if(strstr(tempData, ">") != NULL)
+                {
+                    // TODO: implement inputPayload() function
+                    char subStr[2];
+                    subStr[0] = (char)26;
+                    subStr[1] = '\0';
+                    UART2_writeBytes("{ \"sensorName\" : \"tempSensor\", \"data\" : 111}");
+                    UART2_writeBytes(subStr);
+                    UART0_writeBytes("{ \"sensorName\" : \"tempSensor\", \"data\" : 111}");
+                }
+            }
             break;
         default:
             break;
