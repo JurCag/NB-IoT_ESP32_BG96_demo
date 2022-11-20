@@ -35,6 +35,10 @@
 		{
 			"name": "ESP_logging_demo",
 			"path": "ESP_Projects/ESP_logging_demo"
+		},
+		{
+			"name": "C3_blink_demo",
+			"path": "ESP_Projects/C3_blink_demo"
 		}
 	],
 	"settings": {
